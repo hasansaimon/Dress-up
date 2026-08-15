@@ -390,5 +390,3 @@ class TryOnPipeline(private val context: Context) {
     fun guessCategory(bmp: Bitmap): GarmentCategory = GarmentCategory.UNDEFINED
 }
 
-}
-
