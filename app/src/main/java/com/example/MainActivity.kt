@@ -1,5 +1,6 @@
 package com.example
 
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -7,480 +8,134 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddAPhoto
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.*
+import com.example.engine.TryOnPipeline
+import com.example.ui.*
 import com.example.ui.theme.MyApplicationTheme
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-enum class GenerationState {
-    IDLE, LOADING, SUCCESS
+sealed interface Screen {
+    data object Home : Screen
+    data object Editor : Screen
+    data object Preview : Screen
 }
 
 class MainActivity : ComponentActivity() {
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            MyApplicationTheme {
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    topBar = {
-                        TopAppBar(
-                            title = {
-                                Text(
-                                    "AI Tailor",
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onBackground
-                                )
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = Color.Transparent,
-                            )
-                        )
-                    }
-                ) { innerPadding ->
-                    VirtualFitScreen(modifier = Modifier.padding(innerPadding))
-                }
-            }
-        }
+        setContent { MyApplicationTheme { App() } }
     }
 }
 
 @Composable
-fun VirtualFitScreen(modifier: Modifier = Modifier) {
-    var personUri by remember { mutableStateOf<Uri?>(null) }
-    var dressUri by remember { mutableStateOf<Uri?>(null) }
-    var generationState by remember { mutableStateOf(GenerationState.IDLE) }
-    var fitValue by remember { mutableFloatStateOf(0.5f) }
-    
+fun App() {
+    val context = LocalContext.current
+    val pipeline = remember { TryOnPipeline(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
-    val personPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) personUri = uri }
+    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    var session by remember { mutableStateOf<EditSession?>(null) }
+    var wardrobe by remember { mutableStateOf<List<WardrobeItem>>(emptyList()) }
+    var previewPair by remember { mutableStateOf<Pair<Bitmap, Bitmap>?>(null) }
+    var pendingModel by remember { mutableStateOf<Uri?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-    val dressPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) dressUri = uri }
+    // --- pickers ----------------------------------------------------------
+    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) pendingModel = uri
+    }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Hero Section (Result)
-        ResultHeroSection(
-            state = generationState,
-            personUri = personUri,
-            dressUri = dressUri,
-            fitValue = fitValue
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // Input Selection
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            ImageSelectorCard(
-                modifier = Modifier.weight(1f),
-                title = "Person",
-                uri = personUri,
-                placeholderRes = R.drawable.img_sample_person,
-                onClick = {
-                    personPicker.launch(
-                        androidx.activity.result.PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.ImageOnly
-                        )
+    val garmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        when (screen) {
+            is Screen.Home -> {
+                // model selected earlier -> create session -> open editor
+                val model = pendingModel
+                pendingModel = null
+                if (model == null) {
+                    // no model yet: just add to wardrobe
+                    wardrobe = wardrobe + WardrobeItem(
+                        id = "w_${System.nanoTime()}", name = "Item ${wardrobe.size + 1}",
+                        category = GarmentCategory.UNDEFINED, uri = uri
                     )
-                }
-            )
-
-            ImageSelectorCard(
-                modifier = Modifier.weight(1f),
-                title = "Dress",
-                uri = dressUri,
-                placeholderRes = R.drawable.img_sample_dress,
-                onClick = {
-                    dressPicker.launch(
-                        androidx.activity.result.PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.ImageOnly
-                        )
-                    )
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        AnimatedVisibility(visible = generationState == GenerationState.SUCCESS) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 24.dp)
-            ) {
-                Text(
-                    text = "Adjust Fit precisely",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                Slider(
-                    value = fitValue,
-                    onValueChange = { fitValue = it },
-                    valueRange = 0f..1f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.tertiary,
-                        activeTrackColor = MaterialTheme.colorScheme.tertiary,
-                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Loose", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                    Text("Tight", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Button(
-                    onClick = {
-                        scope.launch {
-                            generationState = GenerationState.LOADING
-                            delay(1500) // Simulate fast AI adjustment
-                            generationState = GenerationState.SUCCESS
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Regenerate Fit")
-                }
-            }
-        }
-
-        // Generate Button
-        Button(
-            onClick = {
-                if (generationState != GenerationState.LOADING) {
+                } else {
                     scope.launch {
-                        generationState = GenerationState.LOADING
-                        delay(3000) // Simulate AI processing
-                        generationState = GenerationState.SUCCESS
-                    }
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.tertiary,
-                contentColor = Color.White
-            )
-        ) {
-            Icon(
-                imageVector = Icons.Default.AutoAwesome,
-                contentDescription = null,
-                modifier = Modifier.padding(end = 8.dp)
-            )
-            Text(
-                text = if (generationState == GenerationState.LOADING) "GENERATING..." else "VIRTUAL TRY-ON",
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                fontSize = 16.sp
-            )
-        }
-    }
-}
-
-@Composable
-fun ResultHeroSection(
-    state: GenerationState,
-    personUri: Uri?,
-    dressUri: Uri?,
-    fitValue: Float
-) {
-    val containerShape = RoundedCornerShape(24.dp)
-    var showOriginal by remember { mutableStateOf(false) }
-
-    LaunchedEffect(state) {
-        if (state == GenerationState.LOADING) {
-            showOriginal = false
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(3f / 4f)
-            .clip(containerShape)
-            .background(MaterialTheme.colorScheme.surface),
-        contentAlignment = Alignment.Center
-    ) {
-        AnimatedContent(
-            targetState = state,
-            transitionSpec = {
-                fadeIn(animationSpec = tween(500)) togetherWith fadeOut(animationSpec = tween(500))
-            }, label = "ResultAnimation"
-        ) { targetState ->
-            when (targetState) {
-                GenerationState.IDLE -> {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .size(64.dp)
-                                .padding(bottom = 16.dp),
-                            tint = MaterialTheme.colorScheme.outline
-                        )
-                        Text(
-                            text = "Your AI Fitting Room",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Upload a person and a dress to see the magic happen in real time.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.outline,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
-                }
-
-                GenerationState.LOADING -> {
-                    ScannerEffect()
-                }
-
-                GenerationState.SUCCESS -> {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        // Use Coil's AsyncImage for both local drawables and actual user URIs
-                        val scale = if (!showOriginal) 0.95f + (fitValue * 0.1f) else 1f
-                        val imageModel: Any = if (showOriginal) {
-                            personUri ?: R.drawable.img_sample_person
-                        } else {
-                            R.drawable.img_sample_result
-                        }
-                        
-                        AsyncImage(
-                            model = imageModel,
-                            contentDescription = if (showOriginal) "Original Image" else "Virtual Try-On Result",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .scale(scale)
-                        )
-                        
-                        // Original vs Result Toggle
-                        Row(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(16.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(Color.Black.copy(alpha = 0.5f))
-                                .padding(4.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .background(if (showOriginal) MaterialTheme.colorScheme.tertiary else Color.Transparent)
-                                    .clickable { showOriginal = true }
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
-                                Text("Original", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .background(if (!showOriginal) MaterialTheme.colorScheme.tertiary else Color.Transparent)
-                                    .clickable { showOriginal = false }
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
-                                Text("Result", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        
-                        // Success Badge
-                        if (!showOriginal) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(16.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.6f))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("AI Generated", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
+                        busy = true; error = null
+                        session = try {
+                            withContext(Dispatchers.Default) { pipeline.createSession(model, uri, 0) }
+                        } catch (e: Exception) { error = e.message; null }
+                        busy = false
+                        if (session != null) screen = Screen.Editor
                     }
                 }
             }
+            is Screen.Editor -> addLayer(WardrobeItem(
+                id = "tmp_${System.nanoTime()}", name = "New garment",
+                category = GarmentCategory.UNDEFINED, uri = uri
+            ))
+            is Screen.Preview -> {}
         }
     }
-}
 
-@Composable
-fun ScannerEffect() {
-    val infiniteTransition = rememberInfiniteTransition(label = "scanner")
-    val offsetY by infiniteTransition.animateFloat(
-        initialValue = -1f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "scanner_offset"
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        // Background particles or grid could go here
-        
-        // Scanner Line
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(100.dp)
-                .align(Alignment.Center)
-                .offset(y = 150.dp * offsetY)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f),
-                            MaterialTheme.colorScheme.tertiary
-                        )
-                    )
+    // --- actions ----------------------------------------------------------
+    fun addLayer(item: WardrobeItem) {
+        val s = session ?: return
+        scope.launch {
+            try {
+                val (bmp, mask) = withContext(Dispatchers.Default) { pipeline.prepareGarment(item.uri) }
+                val assetId = "layer_${System.nanoTime()}"
+                s.assets.put(assetId, bmp, mask)
+                val layer = GarmentLayer(
+                    id = System.nanoTime(), assetId = assetId, name = item.name,
+                    category = item.category, zIndex = (s.layers.maxOfOrNull { it.zIndex } ?: 0) + 1
                 )
-        )
-        
-        Text(
-            text = "AI is analyzing fit...",
-            color = MaterialTheme.colorScheme.tertiary,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.align(Alignment.Center)
-        )
+                session = s.copy(layers = s.layers + layer)
+            } catch (e: Exception) { error = e.message }
+        }
     }
-}
 
-@Composable
-fun ImageSelectorCard(
-    modifier: Modifier = Modifier,
-    title: String,
-    uri: Uri?,
-    placeholderRes: Int,
-    onClick: () -> Unit
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(bottom = 8.dp)
+    // --- screens ----------------------------------------------------------
+    when (val s = screen) {
+        is Screen.Home -> HomeScreen(
+            wardrobe = wardrobe,
+            onNewProject = { modelPicker.launch("image/*") },
+            onAddToWardrobe = { garmentPicker.launch("image/*") }
         )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(3f / 4f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center
-        ) {
-            if (uri != null) {
-                AsyncImage(
-                    model = uri,
-                    contentDescription = title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                // Show sample with overlay
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Image(
-                        painter = painterResource(id = placeholderRes),
-                        contentDescription = "Sample $title",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.4f))
-                    )
-                    Icon(
-                        imageVector = Icons.Default.AddAPhoto,
-                        contentDescription = "Upload",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(32.dp)
-                    )
-                }
+
+        is Screen.Editor -> session?.let { sess ->
+            EditorScreen(
+                session = sess,
+                wardrobe = wardrobe,
+                onSessionChange = { session = it },
+                onAddGarment = { addLayer(it) },
+                onBack = { screen = Screen.Home },
+                onOpenPreview = { after -> previewPair = sess.base to after; screen = Screen.Preview }
+            )
+        }
+
+        is Screen.Preview -> previewPair?.let { (b, a) ->
+            PreviewScreen(before = b, after = a, onBack = { screen = Screen.Editor })
+        }
+    }
+
+    if (busy) {
+        // lightweight processing indicator
+        androidx.compose.material3.Surface(
+            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+            color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)
+        ) { androidx.compose.material3.CircularProgressIndicator(androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.Center)) }
+    }
+    error?.let { msg ->
+        androidx.compose.material3.SnackbarHost(
+            hostState = remember { androidx.compose.material3.SnackbarHostState() }.also {
+                androidx.compose.runtime.LaunchedEffect(msg) { it.showSnackbar(msg) }
             }
-        }
+        )
     }
 }
