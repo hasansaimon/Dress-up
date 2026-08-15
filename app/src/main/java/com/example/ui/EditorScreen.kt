@@ -275,11 +275,13 @@ private fun AdjustPanel(layer: GarmentLayer, onUpdate: (GarmentLayer) -> Unit) {
             Text("Fabric", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FabricStyle.entries.forEach { f ->
-                    FilterChip(selected = layer.fabric == f, onClick = { onUpdate(layer.copy(fabric = f))) },
-                        label = { Text(f.name.lowercase().replaceFirstChar { it.uppercase() }) })
+                    FilterChip(
+                        selected = layer.fabric == f,
+                        onClick = { onUpdate(layer.copy(fabric = f)) },
+                        label = { Text(f.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    )
                 }
             }
-        }
     }
 }
 
