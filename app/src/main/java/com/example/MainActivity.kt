@@ -8,134 +8,158 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.*
 import com.example.engine.TryOnPipeline
-import com.example.ui.*
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.EditorScreen
+import com.example.ui.HomeScreen
+import com.example.ui.PreviewScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-sealed interface Screen {
-    data object Home : Screen
-    data object Editor : Screen
-    data object Preview : Screen
-}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MyApplicationTheme { App() } }
+        setContent { App() }
     }
 }
 
 @Composable
 fun App() {
     val context = LocalContext.current
-    val pipeline = remember { TryOnPipeline(context.applicationContext) }
+    val pipeline = remember { TryOnPipeline(context) }
     val scope = rememberCoroutineScope()
 
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
-    var session by remember { mutableStateOf<EditSession?>(null) }
     var wardrobe by remember { mutableStateOf<List<WardrobeItem>>(emptyList()) }
-    var previewPair by remember { mutableStateOf<Pair<Bitmap, Bitmap>?>(null) }
     var pendingModel by remember { mutableStateOf<Uri?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var session by remember { mutableStateOf<EditSession?>(null) }
+    val snackbar = remember { SnackbarHostState() }
 
-    // --- pickers ----------------------------------------------------------
     val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) pendingModel = uri
-    }
-
-    val garmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        when (screen) {
-            is Screen.Home -> {
-                // model selected earlier -> create session -> open editor
-                val model = pendingModel
-                pendingModel = null
-                if (model == null) {
-                    // no model yet: just add to wardrobe
-                    wardrobe = wardrobe + WardrobeItem(
-                        id = "w_${System.nanoTime()}", name = "Item ${wardrobe.size + 1}",
-                        category = GarmentCategory.UNDEFINED, uri = uri
-                    )
-                } else {
-                    scope.launch {
-                        busy = true; error = null
-                        session = try {
-                            withContext(Dispatchers.Default) { pipeline.createSession(model, uri, 0) }
-                        } catch (e: Exception) { error = e.message; null }
-                        busy = false
-                        if (session != null) screen = Screen.Editor
-                    }
-                }
+        pendingModel = uri
+        garmentPicker.launch("image/*")
+    }
+    val garmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { garmentUri ->
+        garmentUri ?: return@rememberLauncherForActivityResult
+        val model = pendingModel ?: return@rememberLauncherForActivityResult
+        pendingModel = null
+        busy = true
+        scope.launch {
+            try {
+                val s = withContext(Dispatchers.Default) { pipeline.createSession(model, garmentUri, 0) }
+                session = s
+                screen = Screen.Editor(s)
+            } catch (e: Exception) {
+                error = "Pipeline failed: ${e.message}"
+            } finally {
+                busy = false
             }
-            is Screen.Editor -> addLayer(WardrobeItem(
-                id = "tmp_${System.nanoTime()}", name = "New garment",
-                category = GarmentCategory.UNDEFINED, uri = uri
-            ))
-            is Screen.Preview -> {}
+        }
+    }
+    val wardrobePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val id = "w${System.currentTimeMillis()}"
+                // decode + category guess via pipeline, then append
+                val bmp = withContext(Dispatchers.Default) { pipeline.decode(uri) }
+                val cat = pipeline.guessCategory(bmp)
+                val w = WardrobeItem(id, "Garment ${wardrobe.size + 1}", cat, uri)
+                wardrobe = wardrobe + w
+            } catch (e: Exception) {
+                error = "Wardrobe add failed: ${e.message}"
+            }
         }
     }
 
-    // --- actions ----------------------------------------------------------
     fun addLayer(item: WardrobeItem) {
         val s = session ?: return
         scope.launch {
+            busy = true
             try {
-                val (bmp, mask) = withContext(Dispatchers.Default) { pipeline.prepareGarment(item.uri) }
-                val assetId = "layer_${System.nanoTime()}"
-                s.assets.put(assetId, bmp, mask)
+                val (garment, mask) = withContext(Dispatchers.Default) { pipeline.prepareGarment(item.uri) }
+                val assetId = "a${System.nanoTime()}"
+                s.assets.put(assetId, garment, mask)
                 val layer = GarmentLayer(
-                    id = System.nanoTime(), assetId = assetId, name = item.name,
-                    category = item.category, zIndex = (s.layers.maxOfOrNull { it.zIndex } ?: 0) + 1
+                    id = System.nanoTime(),
+                    assetId = assetId,
+                    name = item.name,
+                    category = item.category,
+                    zIndex = (s.layers.maxOfOrNull { it.zIndex } ?: 0) + 1
                 )
                 session = s.copy(layers = s.layers + layer)
-            } catch (e: Exception) { error = e.message }
-        }
-    }
-
-    // --- screens ----------------------------------------------------------
-    when (val s = screen) {
-        is Screen.Home -> HomeScreen(
-            wardrobe = wardrobe,
-            onNewProject = { modelPicker.launch("image/*") },
-            onAddToWardrobe = { garmentPicker.launch("image/*") }
-        )
-
-        is Screen.Editor -> session?.let { sess ->
-            EditorScreen(
-                session = sess,
-                wardrobe = wardrobe,
-                onSessionChange = { session = it },
-                onAddGarment = { addLayer(it) },
-                onBack = { screen = Screen.Home },
-                onOpenPreview = { after -> previewPair = sess.base to after; screen = Screen.Preview }
-            )
-        }
-
-        is Screen.Preview -> previewPair?.let { (b, a) ->
-            PreviewScreen(before = b, after = a, onBack = { screen = Screen.Editor })
-        }
-    }
-
-    if (busy) {
-        // lightweight processing indicator
-        androidx.compose.material3.Surface(
-            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
-            color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)
-        ) { androidx.compose.material3.CircularProgressIndicator(androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.Center)) }
-    }
-    error?.let { msg ->
-        androidx.compose.material3.SnackbarHost(
-            hostState = remember { androidx.compose.material3.SnackbarHostState() }.also {
-                androidx.compose.runtime.LaunchedEffect(msg) { it.showSnackbar(msg) }
+                screen = Screen.Editor(session!!)
+            } catch (e: Exception) {
+                error = "Garment load failed: ${e.message}"
+            } finally {
+                busy = false
             }
-        )
+        }
     }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0F0F1A)) {
+        Box(Modifier.fillMaxSize()) {
+            when (val scr = screen) {
+                is Screen.Home -> HomeScreen(
+                    wardrobe = wardrobe,
+                    onNewProject = { modelPicker.launch("image/*") },
+                    onAddToWardrobe = { wardrobePicker.launch("image/*") }
+                )
+                is Screen.Editor -> {
+                    val s = scr.session
+                    EditorScreen(
+                        session = s,
+                        wardrobe = wardrobe,
+                        onSessionChange = { session = it; screen = Screen.Editor(it) },
+                        onAddGarment = { addLayer(it) },
+                        onBack = { screen = Screen.Home },
+                        onOpenPreview = { after ->
+                            screen = Screen.Preview(s.base, after)
+                        }
+                    )
+                }
+                is Screen.Preview -> PreviewScreen(
+                    before = scr.before,
+                    after = scr.after,
+                    onBack = { screen = Screen.Editor(session!!) }
+                )
+            }
+
+            if (busy) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+            SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
+        }
+    }
+
+    LaunchedEffect(error) {
+        error?.let {
+            snackbar.showSnackbar(it)
+            error = null
+        }
+    }
+}
+
+private sealed interface Screen {
+    data object Home : Screen
+    data class Editor(val session: EditSession) : Screen
+    data class Preview(val before: Bitmap, val after: Bitmap) : Screen
 }
