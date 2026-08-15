@@ -386,4 +386,9 @@ class TryOnPipeline(private val context: Context) {
         val bytes = client.newCall(Request.Builder().url(url).build()).execute().body!!.bytes()
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }
+
+    fun guessCategory(bmp: Bitmap): GarmentCategory = GarmentCategory.UNDEFINED
 }
+
+}
+
