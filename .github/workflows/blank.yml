@@ -22,15 +22,34 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew
+      - name: Install Gradle 8.4
+        run: |
+          wget https://services.gradle.org/distributions/gradle-8.4-bin.zip -O gradle-8.4-bin.zip
+          unzip gradle-8.4-bin.zip -d /tmp
+          sudo mv /tmp/gradle-8.4 /opt/gradle-8.4
+          echo "/opt/gradle-8.4/bin" >> $GITHUB_PATH
+
+      - name: Grant Execute Permission for Gradlew (if present)
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+          else
+            echo "gradlew not found in repo root, skipping chmod"
+          fi
+
+      - name: Debug: show gradlew presence and permissions
+        run: ls -la ./gradlew || echo "gradlew missing"
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug --stacktrace --info
+          else
+            gradle assembleDebug --stacktrace --info
+          fi
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-          
