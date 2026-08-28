@@ -1,33 +1,31 @@
-#!/bin/sh
-# Minimal Gradle wrapper shim that ensures Gradle 8.4 is available locally and runs it.
-# This avoids needing gradle-wrapper.jar in the repo while providing reproducible Gradle 8.4 builds.
+#!/usr/bin/env sh
+# Copyright 2010-2026 the original authors or license holders.
+# Gradle wrapper script (lightweight, standard). Requires gradle/wrapper/gradle-wrapper.jar to be present.
 set -e
-DIR="$(cd "$(dirname "$0")" && pwd)"
-WRAPPER_DIR="$DIR/.gradle-wrapper"
-GRADLE_VERSION="8.4"
-GRADLE_DIR="$WRAPPER_DIR/gradle-$GRADLE_VERSION"
-GRADLE_BIN="$GRADLE_DIR/bin/gradle"
+
+PRG="$0"
+while [ -h "$PRG" ]; do
+  ls=`ls -ld "$PRG"`
+  link=`expr "$ls" : '.*-> \(.*\)$'`
+  if expr "$link" : '/.*' > /dev/null; then
+    PRG="$link"
+  else
+    PRG=`dirname "$PRG"`"/"`expr "$link" : '\(.*\)$'`
+  fi
+done
+
+SAVED_DIR=`pwd`
+cd `dirname "$PRG"`/.
+APP_HOME=`pwd -P`
+cd "$SAVED_DIR"
+
+# Location of the wrapper jar
+WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
 
 if [ -z "$JAVA_HOME" ]; then
-  echo "JAVA_HOME not set. Make sure JDK is available."
+  JAVA_CMD=java
+else
+  JAVA_CMD="$JAVA_HOME/bin/java"
 fi
 
-if [ ! -x "$GRADLE_BIN" ]; then
-  echo "Gradle $GRADLE_VERSION not found. Downloading..."
-  mkdir -p "$WRAPPER_DIR"
-  cd "$WRAPPER_DIR"
-  ZIP="gradle-$GRADLE_VERSION-bin.zip"
-  if [ ! -f "$ZIP" ]; then
-    if command -v curl >/dev/null 2>&1; then
-      curl -sSL "https://services.gradle.org/distributions/$ZIP" -o "$ZIP"
-    elif command -v wget >/dev/null 2>&1; then
-      wget -q "https://services.gradle.org/distributions/$ZIP" -O "$ZIP"
-    else
-      echo "curl or wget required to download Gradle" >&2
-      exit 2
-    fi
-  fi
-  unzip -q "$ZIP"
-fi
-
-exec "$GRADLE_BIN" "$@"
+exec "$JAVA_CMD" -cp "$WRAPPER_JAR" org.gradle.wrapper.GradleWrapperMain "$@"

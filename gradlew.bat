@@ -1,13 +1,18 @@
+@rem Copyright 2010-2026 the original authors or license holders.
+@rem Gradle wrapper batch script. Requires gradle\wrapper\gradle-wrapper.jar to be present.
 @echo off
-REM Minimal Windows shim to fetch Gradle 8.4 and run it. Requires PowerShell.
 setlocal
-set GRADLE_VERSION=8.4
-set WRAPPER_DIR=%~dp0\.gradle-wrapper
-set GRADLE_DIR=%WRAPPER_DIR%\gradle-%GRADLE_VERSION%
-set GRADLE_BIN=%GRADLE_DIR%\bin\gradle.bat
-if not exist "%GRADLE_BIN%" (
-  echo Gradle %GRADLE_VERSION% not found. Downloading...
-  powershell -Command "if(-not (Test-Path -Path '%WRAPPER_DIR%')){New-Item -ItemType Directory -Path '%WRAPPER_DIR%'}; Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-%GRADLE_VERSION%-bin.zip' -OutFile '%WRAPPER_DIR%\\gradle-%GRADLE_VERSION%-bin.zip'" 
-  powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('%WRAPPER_DIR%\\gradle-%GRADLE_VERSION%-bin.zip','%WRAPPER_DIR%')"
+set PRG=%~dp0%~nx0
+:findloop
+if exist "%PRG%" goto found
+echo Wrapper script not found
+goto :eof
+:found
+set APP_HOME=%~dp0
+set WRAPPER_JAR=%APP_HOME%gradle\wrapper\gradle-wrapper.jar
+if defined JAVA_HOME (
+  set JAVA_CMD=%JAVA_HOME%\bin\java
+) else (
+  set JAVA_CMD=java
 )
-"%GRADLE_BIN%" %*
+"%JAVA_CMD%" -cp "%WRAPPER_JAR%" org.gradle.wrapper.GradleWrapperMain %*
